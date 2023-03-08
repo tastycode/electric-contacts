@@ -1,0 +1,17 @@
+{
+  "presets": [
+    "env"
+  ],
+  "plugins": [
+    "transform-runtime",
+    [
+      "inline-json-import",
+      {}
+    ]
+  ],
+  "parserOpts": {
+    "plugins": [
+      "dynamicImport"
+    ]
+  }
+}
