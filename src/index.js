@@ -1,6 +1,7 @@
 //import stateGeos from "./gz_2010_us_040_00_500k.json";
 import "./styles.css";
 import geojsonExtent from "@mapbox/geojson-extent";
+import mapboxGl from 'mapbox-gl'
 var pdfjsLib = require("pdfjs-dist");
 const toBBox = require("geojson-bounding-box");
 
@@ -43,7 +44,10 @@ document.getElementById("app").innerHTML = `
   
   
   <canvas id="pdf-canvas"></canvas>
+<div class="maps-container">
   <svg id="svg-context"></svg>
+  <img id="map-overlay"/>
+</div>
   <select id="state-list"></select>
 </div>
 `;
@@ -173,36 +177,77 @@ document
     });
 
     //west, south, east, north order.
-    const geoBounds = geojsonExtent(stateGeo);
+    const [west, south, east, north] = geojsonExtent(stateGeo);
+    const geoBounds = {
+      x: west,
+      y: north,
+      width: east - west,
+      height: south - north
+    }
     /*
 
     pixelWidth         pixelLeft
     ----------    =   ---------
     geoWidth           geoLeft
-
-
-    geoContainer[1] = geoBounds.longitude - geoLeft
     */
-    var scaleFactorX = (geoBounds[3] - geoBounds[1]) / pathBounds.width;
-    var scaleFactorY = (geoBounds[2] - geoBounds[0]) / pathBounds.height;
-    var offsetX = geoBounds[1] - pathBounds.left * scaleFactorX;
-    var offsetY = geoBounds[0] + pathBounds.top * scaleFactorY;
-    var transformedCoords = {
-      x: -offsetX / scaleFactorX,
-      y: -offsetY / scaleFactorY
-    };
+    const xRatio = geoBounds.width / pathBounds.width
+    const yRatio = geoBounds.height / pathBounds.height
+    var geoLeft = pathBounds.x * xRatio
+    var geoTop = pathBounds.y * yRatio
+    var geoContainerWidth = containerBox.width * xRatio
 
-    // Calculate the latitude and longitude of the top left and bottom right corners of the map
-    var topLeft = {
-      latitude: transformedCoords.y,
-      longitude: transformedCoords.x
-    };
-    var bottomRight = {
-      latitude: transformedCoords.y + pathBounds.height * scaleFactorX,
-      longitude: transformedCoords.x + pathBounds.width * scaleFactorY
-    };
+    var geoContainerHeight = containerBox.height * yRatio
 
-    debugger;
+    var geoContainerTL = {
+        x: geoBounds.x - geoLeft,
+        y: geoBounds.y - geoTop
+      }
+    var geoContainerTR = {
+        x: geoContainerTL.x + geoContainerWidth,
+        y: geoBounds.y - geoTop
+    }
+    var geoContainerBL = {
+        x: geoBounds.x - geoLeft,
+        y: geoContainerTL.y + geoContainerHeight
+    }
+    var geoContainerBR = {
+        x: geoContainerTL.x + geoContainerWidth,
+        y: geoContainerTL.y + geoContainerHeight
+    }
+
+
+    const gMapParameters = {
+       auto: '',
+      size: '600x300',
+      maptype: 'roadmap',
+      format: 'png',
+      key: 'AIzaSyBEPtIQzAXpTxTkRbGzKuG1p1N7i6g9bAI',
+
+    }
+
+    const aspect = containerBox.weight / containerBox.height
+    const baseWidth =containerBox.width
+    const targetHeight =  parseInt(baseWidth * containerBox.height / containerBox.width)
+
+    //var url = `https://maps.googleapis.com/maps/api/staticmap?auto=&scale=2&size=600x300&maptype=roadmap&format=png&key=AIzaSyBEPtIQzAXpTxTkRbGzKuG1p1N7i6g9bAI&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C1%7C${geoContainerTL.y}%2C${geoContainerTL.x}|&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C2%7C${geoContainerBR.y}%2C${geoContainerBR.x}`
+    var url = `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/[${geoContainerBL.x},${geoContainerBL.y},${geoContainerTR.x},${geoContainerTR.y}]/${baseWidth}x${targetHeight}?access_token=pk.eyJ1IjoidGFzdHljb2RlMiIsImEiOiJjbGdiNHdnOGEwb28wM2pxcDB6amtrN3kwIn0.zuXHfjoFOj73cV_ni3t3UA`
+    document.querySelector('#map-overlay').setAttribute('src', url)
+
+
+
+    /*
+* var url = `https://maps.googleapis.com/maps/api/staticmap?auto=&scale=2&size=600x300&maptype=roadmap&format=png&key=AIzaSyBEPtIQzAXpTxTkRbGzKuG1p1N7i6g9bAI&${
+  geoContainer.map((point, i) => {
+    return `markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:${i}%7C${point.y}%2C${point.x}`
+  }).join('|')} `*/
+
+    // now calculate the center of the state and the scale X / scale Y. Show the map at some appropriate zoom level over the distrct map
+    const pathCenter = {
+      x: pathBounds.x + (pathBounds.width / 2),
+      y: pathBounds.y + (pathBounds.height / 2)
+    }
+
+
 
     // compute a transform that produces geo from SVG
 
