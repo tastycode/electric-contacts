@@ -3,7 +3,7 @@
     "env"
   ],
   "plugins": [
-    "transform-runtime",
+    "@babel/plugin-transform-runtime",
     [
       "inline-json-import",
       {}
