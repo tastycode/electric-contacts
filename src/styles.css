@@ -5,6 +5,13 @@ body {
   position: relative;
 }
 
+#map-interactive-overlay {
+  position: absolute;
+  top: 0px;
+  left: 0px;
+  opacity: 0.75;
+}
+
 #map-overlay {
   position: absolute;
   top: 0px;
