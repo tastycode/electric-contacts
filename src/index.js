@@ -3,6 +3,7 @@ import "./styles.css";
 import geojsonExtent from "@mapbox/geojson-extent";
 import mapboxgl from 'mapbox-gl'
 import { SVG } from '@svgdotjs/svg.js'
+import * as turf from '@turf/turf'
 
 import { geoFromSVGXML } from 'svg2geojson'
 import * as R from 'ramda'
@@ -149,7 +150,9 @@ The PDF files for this tool are available at <a href="https://www.cooperative.co
   <div class="contacts-container">
       <svg id="svg-contacts"></svg>
   </div>
-  <div id='candidate-zips'>
+  <div id='candidate-zips-contained'>
+  </div>
+  <div id='candidate-zips-crossed'>
   </div>
 </div>
 `;
@@ -890,9 +893,11 @@ document
       // }}
 
       
-      geoPaths = Object.entries(textPaths).reduce((result, [districtName, svgPath]) => {
+      coopListElement.innerHTML += "<option selected>Choose a coop</option>"
+      geoPaths = Object.entries(textPaths).sort((a,b) => {
+        return a[0] > b[0] ? 1 : -1
+      }).reduce((result, [districtName, svgPath]) => {
 
-        coopListElement.innerHTML += "<option selected>Choose a coop</option>"
         const districtIndex = Object.keys(textPaths).indexOf(districtName)
           const geoPath = geoFeatureForMatch(districtName, svgPath)
           coopListElement.innerHTML += `<option>${districtName}</option>`
@@ -997,49 +1002,57 @@ document
       }
       feature.properties.BOX = dBox
 
-      return feature
-
-
+      return turf.lineStringToPolygon(feature)
     }
 
 
     processFiles()
-    debugger
     document.querySelector('#coop-list').addEventListener('change', (e) => {
       const matchingZips = []
       const selectedName = e.target.selectedOptions[0].value
       const district = geoPaths[e.target.selectedOptions[0].value]
-      const candidateZips = zipGeos.features.reduce((result, feature) => {
-        const featureBox = feature.properties.BOX
-        if (featureBox) {
-          // is box inside district> if so , print list in textbox of zip codes
-          const center = getCenterOfBox(featureBox)
-          if (isPointWithinBox(center, district.geoPath.properties.BOX)) {
-            result = [...result, feature]
-          }
+      const tDistrict = turf.feature(district.geoPath.geometry)
+      const zipMatches = zipGeos.features.reduce((result, zipFeature) => {
+        const tZipFeature = turf.polygonToLineString(turf.feature(zipFeature.geometry))
+        const crossed = turf.booleanCrosses(tDistrict, tZipFeature)
+        const crosses = zipFeature.properties.crosses ?? []
+        if (crossed) {
+          crosses.push(district)
+          crosses = [...crosses, district]
+        } 
+        zipFeature.properties.crosses = crosses
+
+        const contained = turf.booleanContains(tDistrict, tZipFeature)
+        const contains = zipFeature.properties.contains ?? []
+        if (contained) {
+          contains.push(district)
         }
+        zipFeature.properties.contains = contains
+        contained && result.contained.push(zipFeature)
+        crossed && result.crossed.push(zipFeature)
         return result
-      }, [])
-      const features = {
-        type: "FeatureCollection",
-        features: candidateZips
-      }
-      const candidateList = candidateZips.map(feature => feature.properties.ZIP)
-      document.querySelector('#candidate-zips').value = `<h2>Matching Zips</h2><br/>
+      }, {contained: [], crossed: []})
+      document.querySelector('#candidate-zips-contains').value = `<h2>Full Matches</h2><br/>
       <ul>
-        ${candidateList.map(zip => `<li>${zip}</li>`).join('')}
+        ${zipMatches.contained.map(zip => `<li>${zip.properties.ZCTA5CE10}</li>`).join('')}
       </ul>
       `
-      for (const zipFeature of candidateZips) {
+      document.querySelector('#candidate-zips-crossed').value = `<h2>Partial Matches</h2><br/>
+      <ul>
+        ${zipMatches.crossed.map(zip => `<li>${zip.properties.ZCTA5CE10}</li>`).join('')}
+      </ul>
+      `
+      for (const zipFeature of [...zipMatches.contained, ...zipMatches.crossed]) {
         const zip = zipFeature.properties.ZCTA5CE10
         mbMap.addSource(zip, {
           type: 'geojson',
           data: zipFeature
         })
+        const maxBrightness = zipMatches.contained.includes(zipFeature) ? 255 : 128
         const randomColor = [
-          parseInt(Math.random() * 255).toString(16),
-          parseInt(Math.random() * 255).toString(16),
-          parseInt(Math.random() * 255).toString(16)
+          parseInt(Math.random() * maxBrightness).toString(16),
+          parseInt(Math.random() * maxBrightness).toString(16),
+          parseInt(Math.random() * maxBrightness).toString(16)
         ].join('')
         mbMap.addLayer({
         'id': `fill-${zip}`,
@@ -1052,20 +1065,19 @@ document
           }
         });
 
-      mbMap.addLayer({
-        'id': `outline-${zip}`,
-        'type': 'line',
-        'source': zip,
-        'layout': {},
-        'paint': {
-          'line-color': `#${randomColor}`,
-          'line-width': 1,
-          'line-opacity': 0.75
-        }
-      });
+        mbMap.addLayer({
+          'id': `outline-${zip}`,
+          'type': 'line',
+          'source': zip,
+          'layout': {},
+          'paint': {
+            'line-color': `#${randomColor}`,
+            'line-width': 1,
+            'line-opacity': 0.75
+          }
+        });
 
       }
-
     })
 
 
