@@ -1,0 +1,10 @@
+[submodule "State-zip-code-GeoJSON"]
+	path = State-zip-code-GeoJSON
+	url = https://github.com/OpenDataDE/State-zip-code-GeoJSON.git
+[submodule "repos/us-zcta-counties"]
+	url = https://github.com/AdmitHub/us-zcta-counties.git
+	active = true
+
+[submodule "repositories/us-zcta-counties"]
+	path = repositories/us-zcta-counties
+	url = https://github.com/AdmitHub/us-zcta-counties.git

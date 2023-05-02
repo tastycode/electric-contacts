@@ -2,12 +2,71 @@
 import "./styles.css";
 import geojsonExtent from "@mapbox/geojson-extent";
 import mapboxgl from 'mapbox-gl'
+import { SVG } from '@svgdotjs/svg.js'
+
 import { geoFromSVGXML } from 'svg2geojson'
 import * as R from 'ramda'
+import UnitedStates from 'states-us'
 
 var pdfjsLib = require("pdfjs-dist");
 const toBBox = require("geojson-bounding-box");
 
+let containerFeature = {
+  svgPath: null,
+  geo: {
+    box: null,
+    bounds: null,
+    points: null,
+  },
+  screen: {
+    box: null,
+    bounds: null,
+    points: null,
+  },
+  view: {
+    box: null,
+    bounds: null,
+    points: null,
+  }
+}
+
+let stateFeature = {
+  svgPath: null,
+  geo: {
+    box: null,
+    bounds: null,
+    points: null,
+  },
+  screen: {
+    box: null,
+    bounds: null,
+    points: null,
+  },
+  view: {
+    box: null,
+    bounds: null,
+    points: null,
+  }
+}
+const runtime = {
+  features: {
+    container: containerFeature,
+    state: stateFeature
+  },
+  transformers: {
+    sXg: null,
+    vXs: null
+  },
+  refs: {
+    $mc: null
+  },
+  data: {
+    states: [],
+    selectedState: null,
+    districts: [],
+    selectedDistrict: null
+  }
+}
 // 5 contacts randomly around in arkansas
 const contacts = [
   {
@@ -71,9 +130,13 @@ The PDF files for this tool are available at <a href="https://www.cooperative.co
     <label for="state-list">Target State</label><br/>
       <select id="state-list"></select>
 </p>
-  <p>
   <input type="submit">
 
+  </p>
+  
+  <p class="coop-choice">
+    <label for="coop-list">Cooperative</label><br/>
+      <select id="coop-list"></select>
   </p>
   
   
@@ -83,14 +146,169 @@ The PDF files for this tool are available at <a href="https://www.cooperative.co
       <img id="map-overlay"/>
       <div id="map-interactive-overlay"/></div>
   </div>
-<div class="slidecontainer">
-  <input type="range" min="1" max="100" value="50" class="slider" id="myRange" onChange>
-</div>
+  <div class="contacts-container">
+      <svg id="svg-contacts"></svg>
+  </div>
+  <div id='candidate-zips'>
+  </div>
 </div>
 `;
 
+let zipProperties = {}
+let stateZips = {}
 let stateGeos = { features: [] };
 let states = [];
+
+const getCenterOfBox = (bbox) => {
+  return {
+    x: bbox.x + (bbox.width / 2),
+    y: bbox.y + (bbox.height / 2)
+  }
+}
+
+const isPointWithinBox = (point, box) => {
+  const boxMaxX = box.x + box.width
+  const boxMaxY = box.y + box.height
+  return point.x > box.x && point.y > box.y && point.x < boxMaxX && point.y < boxMaxY
+}
+const pointsForBox = ({x,y,width,height}) => {
+  /* this function is presuming a relationship beteen x, and width, as well as height. 
+   * x+width is not necessarily the top right
+   * y + height . I know it stinks, sorry to whoever wrote this. */
+  return [
+    {
+      x,
+      y
+    },
+    {
+      x: x + width,
+      y
+    },
+    {
+      x: x+width,
+      y: y-height
+    },
+    {
+      x,
+      y: y - height
+    }
+  ]
+}
+
+const pointRelativeTo = ({x: xA, y: yA}, {x: xB,y: yB}) => {
+  return {
+    x: xA - xB,
+    y: yA - yB,
+  }
+}
+
+const boundsRelativeTo = ({x: xA, y: yA, width, height}, {x: xB, y: yB}) => {
+  return {
+    ...pointRelativeTo({x: xA, y: yA}, {x: xB, y: yB}) ,
+    width,
+    height
+  }
+}
+
+const zeroOrigin = ({x,y,width,height}) => {
+  return {
+    x: 0,
+    y: 0,
+    width,
+    height
+  }
+}
+
+class SimpleShapeReferenceConverter {
+  constructor(sourceBox, targetBox, options = {}) {
+    if (R.isNil(sourceBox))
+      throw new Error('Source cannot be null')
+    if (R.isNil(targetBox))
+      throw new Error('Target cannot be null')
+    this.sourceBox = sourceBox
+    this.targetBox = targetBox
+    this.options = options
+  }
+
+  _transformer(source,target) {
+    const sX = target.width / source.width
+    const sY = target.height / source.height
+    const tX = target.x - (source.x * sX)
+    const tY = target.y +  (source.y * sY)
+    return {
+      sX, sY, tX, tY
+    }
+  }
+
+  _targetTransformer() { 
+    const { targetBox, sourceBox } = this
+    return this._transformer(sourceBox, targetBox)
+  }
+
+  _sourceTransformer() {
+    const { sourceBox, targetBox } = this
+    return this._transformer(targetBox, sourceBox)
+  }
+
+  sourceToTarget({x,y}) {
+    const {
+      sX, sY, tX, tY
+    } = this._targetTransformer()
+    if (this.options.invertY) {
+      return {
+        x: x * sX + tX,
+        y: (y * -sY + tY) - this.sourceBox.height,
+      }
+    } else {
+      return {
+        x: x * sX + tX,
+        y: tY - y * sY,
+      }
+    }
+  }
+
+  targetToSource({x,y}) {
+    const {
+      sX, sY, tX, tY
+    } = this._sourceTransformer()
+    return {
+      x: x * sX + tX,
+      y: y * sY + tY
+    }
+  }
+
+  targetToSourceBounds({x,y,width,height}) {
+    const {
+      sX, sY, tX, tY
+    } = this._sourceTransformer()
+    return {
+      x: x * sX + tX,
+      y: y * sY + tY,
+      width: width * sX,
+      height: height * sY
+    }
+  }
+  sourceToTargetBounds({x,y,width,height}, {xOffset = 0, yOffset = 0} = {xOffset: 0, yOffset: 0 }) {
+    const {
+      sX, sY, tX, tY
+    } = this._targetTransformer()
+    if (this.options.invertY) {
+      return {
+        x: x * sX + tX,
+        y: y * sY - tY,
+        width: width * sX,
+        height: height * sY
+      }
+    } else {
+      return {
+        x: x * sX + tX,
+        y: y * sY + tY,
+        width: width * sX + xOffset,
+        height: height * sY + yOffset
+      }
+    }
+  }
+}
 (async () => {
   stateGeos = await (
     await fetch(
@@ -104,6 +322,30 @@ let states = [];
   }
   document.querySelector("#state-list").innerHTML = stateOptions;
 })();
+(async () => {
+  const {zip_state_county: countiesData} = await (
+    await fetch(
+      "/us-zcta-counties/zip_state_county.json"
+    )
+  ).json();
+
+  stateZips = {}
+  zipProperties = countiesData.reduce( (result, [zip, stateAbbreviation, zipName]) => {
+    result[zip] = { zipName, stateAbbreviation }
+    stateZips[stateAbbreviation] = {
+      zip,
+      name: zipName
+    }
+    return result
+  },{})
+})();
+
+const fetchStateZipGeos = async (state) => {
+  const path = `${state.abbreviation.toLowerCase()}_geo.min.json`
+  const stateZip = await (await fetch(`/state-zip-geojson/${path}`)).json()
+  return stateZip
+}
+
 
 const readAsText = (inputNode) => {
   var reader = new FileReader();
@@ -176,7 +418,11 @@ document
 
     // todo: all these share too much state, refactor
 
-    let statePath, svg, geoContainerBL, geoContainerTR, geoContainerTL, geoStateBounds, pathStateBounds, containerBox, svgRoot, pathBox, stateGeo, xGeoRatio, yGeoRatio, pathElement, baseWidth, targetHeight, viewToScreenBounds, screenToGeoBounds, geoPointForScreenPoint, screenPointForViewPoint
+    let statePath, svg, geoContainerTL,  containerScreenBox, svgRoot,  stateGeo, xGeoRatio, yGeoRatio,  baseWidth, targetHeight, geoPointForScreenPoint,  coops, zipGeos, geoPaths, mbMap
+
+    const parser = new DOMParser();
+    coops = []
+    runtime.refs.$mc = document.querySelector('.maps-container')
 
 
     const findStatePath = () => {
@@ -201,6 +447,11 @@ document
     };
 
 
+    const displayScreenPoint = (label, {x,y, width = 1, height = 1}) => {
+        const pointBox = `<div title="${label}" style="position: absolute; left: ${x}px; top: ${y}px; width: ${width}px; height: ${height}px; background-color: rgba(150,100,100,0.5);"></div>`
+        runtime.refs.$mc.appendChild(parser.parseFromString(pointBox, 'text/html').body.children[0])
+    }
+
     // now we pass in the lat/longs to the SVG as meta elements
 
     // pass into svg2geojson library
@@ -208,7 +459,7 @@ document
       //https://stackoverflow.com/questions/4505103/how-to-remove-xml-namespaces-using-javascript
       let parentElement = document.createElement(root.localName);
       let nodeChildren = root.childNodes;
-      for (let i = 0; i <nodeChildren.length; i++) {
+      for (let i = 0; i < nodeChildren.length; i++)  {
           let node = nodeChildren[i];
           if(node.nodeType == 1){
               let child
@@ -229,11 +480,10 @@ document
       const svgFragment = `
       <MetaInfo xmlns="http://www.prognoz.ru"><Geo>
         <GeoItem X="${svgTL.x}" Y="${svgTL.y}" Latitude="${geoStateTL.y}" Longitude="${geoTL.x}"/>
-        <GeoItem X="${svgBR.x}" Y="${svgBR.y}" Latitude="${geoBR.y}" Longitude="${geoBR.x}"/>
+        <GeoItem X="${svgBR.x}" Y="${svgBR.y}" Latitude="${geoStateBR.y}" Longitude="${geoBR.x}"/>
       </Geo></MetaInfo>`
 
 
-      const parser = new DOMParser();
 
       const regex = /(<svg[^>]*>)/
       const metaInfo = svgFragment.trim();
@@ -245,18 +495,7 @@ document
       return [...svg.querySelectorAll('*[aria-label]')]
     }
 
-    const getCenterOfBox = (bbox) => {
-      return {
-        x: bbox.x + (bbox.width / 2),
-        y: bbox.y + (bbox.height / 2)
-      }
-    }
 
-    const isPointWithinBox = (point, box) => {
-      const boxMaxX = box.x + box.width
-      const boxMaxY = box.y + box.height
-      return point.x > box.x && point.y > box.y && point.x < boxMaxX && point.y < boxMaxY
-    }
 
     const translateSvgCoordinate = (x,y) => {
       var pt = svg.createSVGPoint()
@@ -275,11 +514,11 @@ document
 
       const coords = [];
 
-      for(let i=0; i<pathLength; i+=1) {
+      for(let i=0; i < pathLength; i+=2) {
         const point = svgPathElement.getPointAtLength(i);
-        const x = point.x * viewBox.width / svgPathElement.getBoundingClientRect().width + viewBox.x;
-        const y = point.y * viewBox.height / svgPathElement.getBoundingClientRect().height + viewBox.y;
-        coords.push([x, y]);
+        const x = point.x * viewBox.width / svgPathElement.getBoundingClientRect().width + viewBox.x
+        const y = point.y * viewBox.height / svgPathElement.getBoundingClientRect().height + viewBox.y
+        coords.push([x, y])
       }
       return coords
     }
@@ -311,8 +550,8 @@ document
           R.sortBy(path => {
             // what is the overlap between this path's bounding box and the candidate path?
             const currentPathBox = path.getBoundingClientRect()
-            const overX = Math.min(0, textBox.x + textBox.width - currentPathBox.x + pathBox.width)
-            const overY = Math.min(0, textBox.y +  textBox.height - currentPathBox.y + pathBox.height)
+            const overX = Math.min(0, textBox.x + textBox.width - currentPathBox.x + runtime.features.state.screen.box.width)
+            const overY = Math.min(0, textBox.y +  textBox.height - currentPathBox.y + runtime.features.state.screen.box.height)
             const underX = Math.min(currentPathBox.x - textBox.x, 0)
             const underY = Math.min(currentPathBox.y - textBox.y, 0)
             const total = overX + overY + underX + underY
@@ -346,7 +585,12 @@ document
 
 
     const showStaticMap = () => {
-      let url = `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/[${geoContainerBL.x},${geoContainerBL.y},${geoContainerTR.x},${geoContainerTR.y}]/${baseWidth}x${targetHeight}?access_token=${mbT}`
+      const { bl, tr } = containerFeature.geo.points
+      const lats = [bl.y, tr.y].sort( (a,b) => a - b)
+      const lons = [ bl.x, tr.x ].sort( (a,b)=> a - b)
+
+
+      let url = `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/[${lons[0]},${lats[0]},${lons[1]},${lats[1]}]/${baseWidth}x${targetHeight}?access_token=${mbT}`
       document.querySelector('#map-overlay').setAttribute('src', url)
 
     }
@@ -356,37 +600,36 @@ document
       interactiveMap.style.width = `${baseWidth}px`
       interactiveMap.style.height = `${targetHeight}px`
 
-      const center = getCenterOfBox(statePath.path.getBBox())
-      const map = new mapboxgl.Map({
+      mbMap = new mapboxgl.Map({
         container: 'map-interactive-overlay', // container ID
         // Choose from Mapbox's core styles, or make your own style with Mapbox Studio
         style: 'mapbox://styles/mapbox/light-v11', // style URL
         bounds: [
           [
-            geoContainerBL.x,
-            geoContainerBL.y
+            containerFeature.geo.points.bl.x,
+            containerFeature.geo.points.bl.y,
           ],
           [
-            geoContainerTR.x,
-            geoContainerTR.y
+            containerFeature.geo.points.tr.x,
+            containerFeature.geo.points.tr.y,
           ]
         ]
       });
        
-      map.on('load', () => {
-        map.resize()
+      mbMap.on('load', () => {
+        mbMap.resize()
       for (const [name, attrs] of Object.entries(geoPaths)) {
         const pathIndex = Object.keys(geoPaths).indexOf(name)
         const {svgPath, geoPath} = attrs
         if (attrs) {
-          map.addSource(name, {
+          mbMap.addSource(name, {
             type: 'geojson',
             data: geoPath
           })
         }
         // Add a data source containing GeoJSON data.
         // Add a new layer to visualize the polygon.
-        map.addLayer({
+        mbMap.addLayer({
         'id': `fill-${pathIndex}`,
         'type': 'fill',
         'source': name,
@@ -397,7 +640,7 @@ document
           }
         });
         // Add a black outline around the polygon.
-        map.addLayer({
+        mbMap.addLayer({
           'id': `outline-${pathIndex}`,
           'type': 'line',
           'source': name,
@@ -407,7 +650,7 @@ document
             'line-width': 1
           }
         });
-        map.addLayer({
+        mbMap.addLayer({
           'id': `text-${pathIndex}`,
           'type': 'symbol',
           'source': name,
@@ -415,6 +658,7 @@ document
             'text-field': '{title}'
           }
         });
+        mbMap.scrollZoom.disable()
       }
       })
     }
@@ -435,21 +679,29 @@ document
       const pdf = await new Promise((resolve, reject) => {
         loadingTask.promise.then(resolve);
       });
-      const page = await pdf.getPage(1);
 
-      const viewport = page.getViewport({ scale: 1.0 });
-      const opList = await page.getOperatorList();
-      const svgGfx = new SVGGraphicsOverride(page.commonObjs, page.objs);
-      svgGfx.embedFonts = false;
+      async function renderPageToSVG(pageNumber, contextID) {
+        const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1.0 });
+        const opList = await page.getOperatorList();
+        const svgGfx = new SVGGraphicsOverride(page.commonObjs, page.objs);
+        svgGfx.embedFonts = false;
+        let doc = await svgGfx.getSVG(opList, viewport);
+        // Prepare canvas using PDF page dimensions
+        doc.id = contextID;
+        document.querySelector(`#${contextID}`).replaceWith(doc);
+        return doc
+      }
 
-      const svg = await svgGfx.getSVG(opList, viewport);
-      // Prepare canvas using PDF page dimensions
-      svg.id = "svg-context";
-      document.querySelector("#svg-context").replaceWith(svg);
+      const svg = await renderPageToSVG(1, 'svg-context')
+      const $svg = SVG(svg)
+      await renderPageToSVG(2, 'svg-contacts')
 
       svgRoot = document.querySelector("#svg-context");
       statePath = findStatePath();
+      stateFeature.svgPath = statePath.path
       statePath.path.stroke = "#ff0000"
+      //stateCountyGeos = fetchStateZipGeos()
       // now we have a bounding box for the whole state
       // we also know the true bounding box in latitude and longitude
       // given the position of the state bounding box within the
@@ -458,52 +710,107 @@ document
 
       // get SVG bounding box
 
-      pathBox = statePath.path.getBoundingClientRect();
-      const pathViewBox = statePath.path.getBBox()
-      containerBox = statePath.path.ownerSVGElement.getBoundingClientRect();
-      const containerViewBox = statePath.path.ownerSVGElement.getBBox()
-      pathStateBounds = {
-        x: pathBox.left - containerBox.left,
-        y: pathBox.top - containerBox.top,
-        width: pathBox.width,
-        height: pathBox.height
-      };
 
+      const selectedState = document.querySelector("#state-list").value;
       stateGeo = stateGeos.features.find((f) => {
-        const selectedState = document.querySelector("#state-list").value;
         return f.properties.NAME === selectedState;
       });
+      const state = UnitedStates.find(state => state.name === selectedState)
+      zipGeos = (await fetchStateZipGeos(state))
+      for (const [zip, areas] of Object.entries(zipProperties)) {
+        const feature = zipGeos.features.find( feature => {
+          const geoZip = feature.properties.ZCTA5CE10
+          return geoZip == zip
+        })
+        if (feature) {
+          const [west, south, east, north] = geojsonExtent(feature)
+          const zipBox = {
+            x: west,
+            y: north,
+            width: Math.abs(west - east),
+            height: Math.abs(north - south)
+          }
+          const originalProperties = {...feature?.properties}
+          feature.properties = {
+            ...feature.properties,
+            "NAME": areas.zipName,
+            "BOX": zipBox
+          }
+        }
+      }
+      const zipIndex = zipGeos.features.reduce( (result, feature) => {
+        const zip = feature.properties.ZCTA5CE10
+        result[zip] = feature
+        return result
+      }, {})
 
+
+      containerFeature.svgPath = statePath.path.ownerSVGElement
+
+      containerFeature.screen.box = containerFeature.svgPath.getBoundingClientRect();
+      containerFeature.screen.bounds = zeroOrigin(containerFeature.screen.box)
+
+      stateFeature.screen.box = boundsRelativeTo(statePath.path.getBoundingClientRect(), containerFeature.screen.box)
+      stateFeature.view.bounds = boundsRelativeTo(statePath.path.getBBox(), svg.getBBox())
+      stateFeature.screen.bounds = boundsRelativeTo(stateFeature.screen.box, containerFeature.screen.box)
+
+      //statePathViewBox (non-relative to container 0), statePathScreenBounds, geo
       //west, south, east, north order.
       const [west, south, east, north] = geojsonExtent(stateGeo);
-      geoStateBounds = {
+
+      stateFeature.geo.box = {
         x: west,
         y: north,
-        width: east - west,
-        height: south - north
+        width: Math.abs(west - east),
+        height: Math.abs(north - south)
       }
+      stateFeature.view.box = stateFeature.svgPath.getBBox()
+
+      var [tl, tr, br, bl] = pointsForBox(stateFeature.geo.box)
+      stateFeature.geo.points = {tl, tr, br, bl}
+
+      runtime.transformers.vXs = new SimpleShapeReferenceConverter(stateFeature.view.bounds, stateFeature.screen.bounds, {
+          invertY: true
+      })
+
+      const containerRect = containerFeature.svgPath.getBoundingClientRect()
+      const stateRect = boundsRelativeTo(stateFeature.svgPath.getBoundingClientRect(), containerRect)
+      runtime.transformers.sXg = new SimpleShapeReferenceConverter(stateRect, stateFeature.geo.box)
+      containerFeature.geo.box = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.box)
+      containerFeature.geo.box.y = 
+      containerFeature.geo.bounds = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.bounds)
+
 
       // compute a transform that produces svg screen from svg view space
-      const xViewRatio = pathStateBounds.width / pathViewBox.width
-      const yViewRatio = pathStateBounds.height / pathViewBox.height
-      screenPointForViewPoint = ({x, y}) => {
-        const xViewLeft = x - containerViewBox.x
-        const yViewTop = y - containerViewBox.y
-        return {
-          x: xViewLeft * xViewRatio,
-          y: yViewTop * yViewRatio
+      const screenPointForViewPoint = ({x, y}, relativeToContainer = true) => {
+        const screenPoint = runtime.transformers.vXs.sourceToTarget({x,y})
+        if (relativeToContainer) {
+          return pointRelativeTo(screenPoint, containerFeature.screen.box)
+        }
+        return screenPoint
+
+       var p = svg.createSVGPoint()
+        p.x = x
+        p.y = y
+        const txd = p.matrixTransform(svg.getCTM());
+        if (relativeToContainer) {
+          return {
+            x: (containerViewBox.x + txd.x) * xViewRatio,
+            y: (containerViewBox.y - txd.y) * yViewRatio,
+          }
+        } else {
+          return {
+            x: xViewLeft * xViewRatio,
+            y: yViewTop * yViewRatio
+          }
         }
       }
-      viewToScreenBounds = ({x,y,width,height}) => {
-        debugger
-        const { x: screenX, y: screenY} = screenPointForViewPoint({x,y})
-        return {
-          x: screenX,
-          y: screenY,
-          width: width * xViewRatio,
-          height: height * yViewRatio
-        }
+
+      const viewToScreenBounds = ({x,y,width,height}) => {
+        return runtime.transformers.vXs.sourceToTargetBounds({x,y,width,height})
       }
+
+
 
 
       // compute a transform that produces geo from SVG screen
@@ -513,19 +820,38 @@ document
       ----------    =   ---------
       geoWidth           geoLeft
       */
-      xGeoRatio = geoStateBounds.width / pathStateBounds.width
-      yGeoRatio = geoStateBounds.height / pathStateBounds.height
-      var geoLeft = pathStateBounds.x * xGeoRatio
-      var geoTop = pathStateBounds.y * yGeoRatio
+      const {x: geoLeft, y: geoTop } = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.bounds)
+
+//      const geoLeft = geoStateBounds.x - (statePathScreenBounds.x)*xGeoRatio
+ //     const geoTop = geoStateBounds.y - (statePathScreenBounds.y)*yGeoRatio
+
+
       geoPointForScreenPoint = ({x, y}) => {
-        const left = x - containerBox.left
-        const top = y - containerBox.top
+        return runtime.transformers.sXg.sourceToTarget({x,y})
+
+        const left = x - containerScreenBox.left
+        const top = y - containerScreenBox.top
+        if (left < 0 || top < 0) {
+          console.error('All points should be within svg containing box')
+        }
         return {
-          x: left * xGeoRatio + geoLeft,
-          y: top * yGeoRatio + geoTop
+          x: geoLeft + (left * xGeoRatio),
+          y: geoTop - (top * yGeoRatio)
         }
       }
-      screenToGeoBounds = ({x,y,width,height}) => {
+
+      const screenPointForGeo = ({x, y}) => {
+        return runtime.transformers.sXg.targetToSource({x,y})
+        const xDistance = (x - geoLeft) / xGeoRatio
+        const yDistance = (y - geoTop) / yGeoRatio
+        return {
+          x: containerScreenBox.left + xDistance,
+          y: containerScreenBox.top + yDistance
+        }
+      }
+
+      const screenToGeoBounds = ({x,y,width,height}) => {
+        return runtime.transformers.sXg.sourceToTargetBounds({x,y,width,height})
         const { x: geoX, y: geoY} = geoPointForScreenPoint({x,y})
         return {
           x: geoX,
@@ -533,110 +859,110 @@ document
           width: width * xGeoRatio,
           height: height * yGeoRatio
         }
-      }
-      var geoContainerWidth = containerBox.width * xGeoRatio
-      var geoContainerHeight = containerBox.height * yGeoRatio
 
-      geoContainerTL = {
-          x: geoStateBounds.x - geoLeft,
-          y: geoStateBounds.y - geoTop
-        }
-      const geoStateTL = {
-        x: geoStateBounds.x,
-        y: geoStateBounds.y
       }
-      geoContainerTR = {
-          x: geoContainerTL.x + geoContainerWidth,
-          y: geoStateBounds.y - geoTop
-      }
-      geoContainerBL = {
-          x: geoStateBounds.x - geoLeft,
-          y: geoContainerTL.y + geoContainerHeight
-      }
-      var geoContainerBR = {
-          x: geoContainerTL.x + geoContainerWidth,
-          y: geoContainerTL.y + geoContainerHeight
-      }
-      const geoBR = {
-        x: geoStateBounds.x + geoStateBounds.width,
-        y: geoStateBounds.y + geoStateBounds.height
-      }
+      const geoContainer = runtime.transformers.sXg.sourceToTargetBounds(containerFeature.screen.bounds)
+      var geoContainerWidth = geoContainer.width
+      var geoContainerHeight = geoContainer.height
+
+      // to test, we just get the bbox of the statePath and compare ocords
+      //pathViewBox // svg internal view
+      //statePathScreenBox // screen
+    //var [ a, b, c, d] = pointsForBox(runtime.transformers.sXg.sourceToTargetBounds(stateFeature.screen.bounds))
+    var [tl,tr,br,bl] = pointsForBox(geoContainer)
+    containerFeature.geo.points = { tl, tr, br, bl}
+
 
       const NS = svg.getAttribute('xmlns');
-      const aspect = containerBox.weight / containerBox.height
-      baseWidth =containerBox.width
-      targetHeight =  parseInt(baseWidth * containerBox.height / containerBox.width)
+      const aspect = containerFeature.screen.box.width / containerFeature.screen.box.height
+      baseWidth = containerFeature.screen.box.width
+      targetHeight =  parseInt(baseWidth * containerFeature.screen.box.height / containerFeature.screen.box.width)
 
 
       //var url = `https://maps.googleapis.com/maps/api/staticmap?auto=&scale=2&size=600x300&maptype=roadmap&format=png&key=AIzaSyBEPtIQzAXpTxTkRbGzKuG1p1N7i6g9bAI&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C1%7C${geoContainerTL.y}%2C${geoContainerTL.x}|&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C2%7C${geoContainerBR.y}%2C${geoContainerBR.x}`
 
       const textPaths = resolveDistrictPaths(svg)
-      const geoPaths = Object.entries(textPaths).reduce((result, [districtName, svgPath]) => {
+      const coopListElement = document.querySelector('#coop-list')
+      coopListElement.innerHTML = ""
+      // const geoPaths = { [state.name]: {
+      //   svgPath: stateFeature.svgPath,
+      //   geoPath: geoFeatureForMatch(state.name, statePath.path)
+      // }}
 
+      
+      geoPaths = Object.entries(textPaths).reduce((result, [districtName, svgPath]) => {
+
+        coopListElement.innerHTML += "<option selected>Choose a coop</option>"
         const districtIndex = Object.keys(textPaths).indexOf(districtName)
-        if (districtIndex == 3)
+          const geoPath = geoFeatureForMatch(districtName, svgPath)
+          coopListElement.innerHTML += `<option>${districtName}</option>`
           result[districtName] = {
             svgPath,
-            geoPath: geoFeatureForMatch(districtName, svgPath)
+            geoPath,
           }
+
+          coops.push({
+            districtName,
+            svgPath,
+            geoPath
+          })
 
         return result
       }, {})
-      await showStaticMap()
+      
+     // await showStaticMap()
       await showMap(geoPaths)
     }
 
     const geoFeatureForMatch = (name, pathElement) => {
       const pathLength = pathElement.getTotalLength();
-      const viewBox = pathElement.ownerSVGElement.viewBox.baseVal; // get the viewbox
-      const coords = [];
+      const geoCoords = [];
 
       const isDimensionValid = (dimension) => {
         return dimension !== Infinity && dimension !== NaN
       }
 
-      const mc = document.querySelector('.maps-container')
-      const d = new DOMParser()
       
-      const pathViewBox = pathElement.getBBox()
-      const pathScreenBox = viewToScreenBounds(pathViewBox)
-      const pathGeoBox = screenToGeoBounds(pathScreenBox)
+      const owner = containerFeature.svgPath
+      const pathScreenCTM = pathElement.getScreenCTM()
+      const pathInternalViewBox = pathElement.getBBox()
+      const p = owner.createSVGPoint()
+      p.x = pathInternalViewBox.x
+      p.y = pathInternalViewBox.y
 
-    const pathScreenBoxElement = d.parseFromString(`
-      <div style="position: absolute; left: ${pathScreenBox.left}px; top: ${pathScreenBox.top}px; width: ${pathScreenBox.width}px; height: ${pathScreenBox.height}px; background-color: rgba(150,100,100,0.3);">${name}</div>
-      `, 'text/html')
+      const transformed = pointRelativeTo(p.matrixTransform(pathScreenCTM), owner.getBoundingClientRect())
+      const pathScreenBox = {
+        width: pathInternalViewBox.width,
+        height: pathInternalViewBox.height,
+        x: transformed.x,
+        y: transformed.y - pathInternalViewBox.height
+      }
+      
+    
 
-      mc.appendChild(pathScreenBoxElement.body.children[0])
+
+    // const pathScreenBoxElement = parser.parseFromString(`
+    //   <div style="position: absolute; left: ${pathScreenBox.x}px; top: ${pathScreenBox.y}px; width: ${pathScreenBox.width}px; height: ${pathScreenBox.height}px; border: 1px solid rgba(255,0,255,0.33);">${name}</div>
+    //   `, 'text/html')
+
+    //   runtime.refs.$mc.appendChild(pathScreenBoxElement.body.children[0])
       for(let i=0; i<pathLength; i+=1) {
         const point = pathElement.getPointAtLength(i);
-        const screenPoint = screenPointForViewPoint(point)
-        const geoPoint = geoPointForScreenPoint(screenPoint)
+        const screenPoint = pointRelativeTo(
+          point.matrixTransform(pathScreenCTM), 
+          owner.getBoundingClientRect())
 
-        const relativePathGeo = {
-
-        }
-
-        /*
-
-        const pathScreenBox = d.parseFromString(`
-        <div style="position: absolute; left: ${pathRect.left - containerBox.left}px; top: ${pathRect.top - containerBox.top}px; width: ${pathRect.width}px; height: ${pathRect.height}px; background-color: rgba(150,100,100,0.3);">${name}</div>
-        `, 'text/html')
-        mc.appendChild(pathScreenBox.body.children[0])
-*/
-
-        console.log({name, pathBox})
-
-        let x = point.x * viewBox.width / containerBox.width + viewBox.x;
-        let y = point.y * viewBox.height / containerBox.height + viewBox.y;
-
-        let screenX = x * xGeoRatio + geoContainerTL.x
-        let screenY = -y * yGeoRatio + geoContainerTL.y
-        
-       // y += containerBox.top
-        if (isDimensionValid(screenX) && isDimensionValid(screenY)) {
-          coords.push({
-            x: screenX,
-            y: screenY
+        const geoPoint = runtime.transformers.sXg.sourceToTarget(screenPoint)
+       // geoPoint.y = stateFeature.geo.box.y + (geoPoint.y - stateFeature.geo.box.y)  // debt
+        //const screenRelativePoint = screenPointForViewPoint(point, false)
+        //
+       // const pointBox = `<div style="position: absolute; left: ${screenPoint.x}px; top: ${screenPoint.y}px; width: 1px; height: 1px; background-color: rgba(255,100,255,0.5);"></div>`
+        //runtime.refs.$mc.appendChild(parser.parseFromString(pointBox, 'text/html').body.children[0])
+       // y += containerScreenBox.top
+        if (isDimensionValid(screenPoint.x) && isDimensionValid(screenPoint.y)) {
+          geoCoords.push({
+            x: geoPoint.x,
+            y: geoPoint.y
           })
 
         }
@@ -647,25 +973,102 @@ document
       
     const geometry = {
       type: 'LineString',
-      coordinates: coords.map(coord => [coord.x, coord.y])
+      coordinates: geoCoords.map(coord => [coord.x, coord.y])
     };
 
       const properties = {
         name,
-        title: name
+        title: name,
       }
 
-      return {
+      const feature = {
         type: 'Feature',
         geometry,
         properties
+
       }
+
+      const [west, south, east, north] = geojsonExtent(feature)
+      const dBox = {
+        x: west,
+        y: north,
+        width: Math.abs(west - east),
+        height: Math.abs(north - south)
+      }
+      feature.properties.BOX = dBox
+
+      return feature
 
 
     }
 
 
     processFiles()
+    debugger
+    document.querySelector('#coop-list').addEventListener('change', (e) => {
+      const matchingZips = []
+      const selectedName = e.target.selectedOptions[0].value
+      const district = geoPaths[e.target.selectedOptions[0].value]
+      const candidateZips = zipGeos.features.reduce((result, feature) => {
+        const featureBox = feature.properties.BOX
+        if (featureBox) {
+          // is box inside district> if so , print list in textbox of zip codes
+          const center = getCenterOfBox(featureBox)
+          if (isPointWithinBox(center, district.geoPath.properties.BOX)) {
+            result = [...result, feature]
+          }
+        }
+        return result
+      }, [])
+      const features = {
+        type: "FeatureCollection",
+        features: candidateZips
+      }
+      const candidateList = candidateZips.map(feature => feature.properties.ZIP)
+      document.querySelector('#candidate-zips').value = `<h2>Matching Zips</h2><br/>
+      <ul>
+        ${candidateList.map(zip => `<li>${zip}</li>`).join('')}
+      </ul>
+      `
+      for (const zipFeature of candidateZips) {
+        const zip = zipFeature.properties.ZCTA5CE10
+        mbMap.addSource(zip, {
+          type: 'geojson',
+          data: zipFeature
+        })
+        const randomColor = [
+          parseInt(Math.random() * 255).toString(16),
+          parseInt(Math.random() * 255).toString(16),
+          parseInt(Math.random() * 255).toString(16)
+        ].join('')
+        mbMap.addLayer({
+        'id': `fill-${zip}`,
+        'type': 'fill',
+        'source': zip,
+        'layout': {},
+        'paint': {
+          'fill-color': `#${randomColor}`,
+          'fill-opacity': 0.5
+          }
+        });
+
+      mbMap.addLayer({
+        'id': `outline-${zip}`,
+        'type': 'line',
+        'source': zip,
+        'layout': {},
+        'paint': {
+          'line-color': `#${randomColor}`,
+          'line-width': 1,
+          'line-opacity': 0.75
+        }
+      });
+
+      }
+
+    })
+
+
 
   });
 
