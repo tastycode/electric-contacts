@@ -8,19 +8,25 @@
     "build": "parcel build index.html"
   },
   "dependencies": {
+    "@babel/plugin-proposal-decorators": "^7.21.0",
+    "@babel/plugin-syntax-decorators": "^7.21.0",
+    "@freshworks/crayons": "v4",
     "@mapbox/geojson-extent": "1.0.1",
     "@rexxars/babel-plugin-inline-json-import": "0.3.4",
     "@svgdotjs/svg.js": "^3.1.2",
     "@terraformer/common": "2.1.2",
     "@turf/turf": "^6.5.0",
+    "colorjs.io": "^0.4.3",
     "geojson-bounding-box": "0.2.0",
+    "kld-intersections": "^0.7.0",
     "mapbox-gl": "^2.13.0",
     "parcel-bundler": "^1.6.1",
     "pdfjs-dist": "3.3.122",
     "ramda": "^0.29.0",
     "states-us": "^1.0.2",
     "svg.js": "^2.7.1",
-    "svg2geojson": "0.7.1"
+    "svg2geojson": "0.7.1",
+    "utils-decorators": "^2.0.5"
   },
   "devDependencies": {
     "@babel/core": "^7.0.0-0",

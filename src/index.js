@@ -1,73 +1,88 @@
 //import stateGeos from "./gz_2010_us_040_00_500k.json";
+const {Point2D, Intersection, Shapes} = require("kld-intersections");
 import "./styles.css";
 import geojsonExtent from "@mapbox/geojson-extent";
 import mapboxgl from 'mapbox-gl'
 import { SVG } from '@svgdotjs/svg.js'
+import { throttle } from "utils-decorators";
 import * as turf from '@turf/turf'
-
+import Color from 'colorjs.io'
 import { geoFromSVGXML } from 'svg2geojson'
 import * as R from 'ramda'
 import UnitedStates from 'states-us'
-
+import { collapseTextChangeRangesAcrossMultipleVersions } from "typescript";
 var pdfjsLib = require("pdfjs-dist");
 const toBBox = require("geojson-bounding-box");
+class RuntimeContext {
 
-let containerFeature = {
-  svgPath: null,
-  geo: {
-    box: null,
-    bounds: null,
-    points: null,
-  },
-  screen: {
-    box: null,
-    bounds: null,
-    points: null,
-  },
-  view: {
-    box: null,
-    bounds: null,
-    points: null,
+  features = {
+    container: {
+      svgPath: null,
+      geo: {
+        box: null,
+        bounds: null,
+        points: null,
+      },
+      screen: {
+        box: null,
+        bounds: null,
+        points: null,
+      },
+      view: {
+        box: null,
+        bounds: null,
+        points: null,
+      }
+    },
+    state: {
+      svgPath: null,
+      geo: {
+        box: null,
+        bounds: null,
+        points: null,
+      },
+      screen: {
+        box: null,
+        bounds: null,
+        points: null,
+      },
+      view: {
+        box: null,
+        bounds: null,
+        points: null,
+      }
+    }
   }
-}
-
-let stateFeature = {
-  svgPath: null,
-  geo: {
-    box: null,
-    bounds: null,
-    points: null,
-  },
-  screen: {
-    box: null,
-    bounds: null,
-    points: null,
-  },
-  view: {
-    box: null,
-    bounds: null,
-    points: null,
-  }
-}
-const runtime = {
-  features: {
-    container: containerFeature,
-    state: stateFeature
-  },
-  transformers: {
+  transformers = {
     sXg: null,
     vXs: null
-  },
-  refs: {
+  } 
+  refs = {
     $mc: null
-  },
-  data: {
+  }
+  data = {
     states: [],
     selectedState: null,
     districts: [],
     selectedDistrict: null
   }
+  
+
+  @throttle(100)
+  showProgress(title, detail) {
+    const d1 = document.querySelector('#progress-title');
+    if (!R.isNil(d1))
+      d1.innerText = title
+    const d2 = document.querySelector('#progress-detail');
+    if (!R.isNil(d2))
+      d2.innerText = R.isNil(detail) ? '' : detail;
+    console.log('Progress: ', title, detail)
+  }
 }
+
+const runtime = new RuntimeContext()
+const stateFeature = runtime.features.state
+const containerFeature = runtime.features.container
 // 5 contacts randomly around in arkansas
 const contacts = [
   {
@@ -96,6 +111,7 @@ const updateStyles = (changes = {
 
 }
 
+
 // obviously, there are other ways to do this
 // in the absence of a known deployment environment
 // this is enough for me to use my own token
@@ -109,7 +125,9 @@ mbT = `${mbT}rN3kwIn0.zuX`
 mbT = `${mbT}HfjoFOj73cV_`
 mbT = `${mbT}ni3t3UA`
 
-
+progressState = ''
+progressDetail = ''
+runtime.showProgress('initializing')
 pdfjsLib.GlobalWorkerOptions.workerSrc = require("pdfjs-dist/build/pdf.worker.entry.js");
 document.getElementById("app").innerHTML = `
 <h1>REC District Contact Filter</h1>
@@ -117,14 +135,16 @@ document.getElementById("app").innerHTML = `
 The PDF files for this tool are available at <a href="https://www.cooperative.com/programs-services/government-relations/Pages/Congressional-District-Maps.aspx" target="_blank">cooperative.com</a>.
 </p>
 <div>
+
+<form>
 <p>
   <label for="pdfDocument">PDF Map</label><br/>
-  <input type="file" name="pdfDocument" id="pdfDocument" accept="application/pdf, application/x-pdf"/>
+  <input type="file" name="pdfDocument" id="pdfDocument" required accept="application/pdf, application/x-pdf"/>
 </p>
 <p>
 
   <label for="csvDocument">Contacts CSV</label><br/>
-  <input type="file" name="contactDocument" id="contactDocument" accept="text/csv"/>
+  <input type="file" name="contactDocument" id="contactDocument" required accept="text/csv"/>
 
 </p>
 <p>
@@ -137,22 +157,62 @@ The PDF files for this tool are available at <a href="https://www.cooperative.co
   
   <p class="coop-choice">
     <label for="coop-list">Cooperative</label><br/>
-      <select id="coop-list"></select>
+      <select id="coop-list" disabled>
+        <option>No Data</option>
+      </select>
   </p>
   
   
   <canvas id="pdf-canvas"></canvas>
   <div class="maps-container">
       <svg id="svg-context"></svg>
-      <img id="map-overlay"/>
-      <div id="map-interactive-overlay"/></div>
+      <div class="overlays-container">
+        <img id="map-overlay"/>
+        <div id="map-interactive-overlay"/></div>
+      </div>
   </div>
-  <div class="contacts-container">
-      <svg id="svg-contacts"></svg>
+  </form>
+  <fw-toast-message
+  type="inprogress"
+  id="progress-toast"
+  sticky
+  show
+>
+  <div
+    style="display: flex;
+    flex-direction: column;
+    gap: 4px;"
+  >
+    <span
+    id='progress-title'
+      style="font-style: normal;
+    font-weight: 700;
+    font-size: 14px;
+    line-height: 20px;
+    color: #12344D;"
+      >Initializing</span
+    >
+    <span
+      id='progress-detail'
+      style="font-style: normal;
+    font-weight: normal;
+    font-size: 11px;
+    line-height: 18px;
+    color: #12344D;"
+      >Loading dependencies</span
+    >
   </div>
-  <div id='candidate-zips-contained'>
-  </div>
-  <div id='candidate-zips-crossed'>
+</fw-toast-message>
+  <div class="metadata">
+    <div class="contacts-container">
+        <svg id="svg-contacts"></svg>
+    </div>
+    <div id='candidate-zips-contained'>
+    </div>
+    <div id='candidate-zips-crossed'>
+    </div>
+    <div id='candidate-zips-errored'>
+    </div>
   </div>
 </div>
 `;
@@ -161,6 +221,9 @@ let zipProperties = {}
 let stateZips = {}
 let stateGeos = { features: [] };
 let states = [];
+let progressState = null
+let progressDetail = null;
+
 
 const getCenterOfBox = (bbox) => {
   return {
@@ -382,24 +445,37 @@ class SVGGraphicsOverride extends pdfjsLib.SVGGraphics {
     super(commonObjs, objs);
     this._currentSvgText = "";
   }
+  beginText() {
+    this._currentSvgText = "";
+    super.beginText()
+  }
 
   showText = (glyphs) => {
+    let localStr = ""
     for (const glyph of glyphs) {
-      if (glyph && glyph.unicode !== undefined)
+      if (glyph && glyph.unicode !== undefined) {
         this._currentSvgText += glyph.unicode;
+        localStr += glyph.unicode
+
+      }
     }
+    if (localStr) 
+       this.current.tspan.ariaLabel =  localStr
+    if (this._currentSvgText) 
+      this.current.txtElement.ariaLabel = (this.current.txtElement.ariaLabel ?? "") + this._currentSvgText
     super.showText(glyphs);
   };
   endText = () => {
     super.endText();
     const svgText = this._currentSvgText;
+    
     this._currentSvgText = "";
     // this extracts the original textnode name of the polyline and preserves
     // it so we can read it as a normal string, otherwise
     // the pdf stores a mapping of glyphs and optimizes it so that the 
     // mapping of shape to character is completely lost, reading the string is
     // fruitless
-    this.current.txtElement.setAttribute("aria-label", svgText);
+    //this.current.txtElement.setAttribute("aria-label", svgText);
   };
 }
 document
@@ -415,13 +491,14 @@ document
     }
   });
 document
-  .querySelector("input[type=submit]")
-  .addEventListener("click", async () => {
+  .querySelector("form")
+  .addEventListener("submit", async (e) => {
+    e.preventDefault()
 
 
     // todo: all these share too much state, refactor
 
-    let statePath, svg, geoContainerTL,  containerScreenBox, svgRoot,  stateGeo, xGeoRatio, yGeoRatio,  baseWidth, targetHeight, geoPointForScreenPoint,  coops, zipGeos, geoPaths, mbMap
+    let statePath, svg,  geoPaths, csvText, mbMap, coops, svgRoot,  zipGeos,stateGeo, baseWidth, targetHeight
 
     const parser = new DOMParser();
     coops = []
@@ -457,108 +534,119 @@ document
 
     // now we pass in the lat/longs to the SVG as meta elements
 
-    // pass into svg2geojson library
-    const removeNameSpace = (root) => {    
-      //https://stackoverflow.com/questions/4505103/how-to-remove-xml-namespaces-using-javascript
-      let parentElement = document.createElement(root.localName);
-      let nodeChildren = root.childNodes;
-      for (let i = 0; i < nodeChildren.length; i++)  {
-          let node = nodeChildren[i];
-          if(node.nodeType == 1){
-              let child
-              if(node.childElementCount!=0)
-                  child = removeNameSpace(node);
-              else{
-                  child = document.createElement(node.localName);
-                  let textNode = document.createTextNode(node.innerHTML);
-                  child.append(textNode);
-              }
-              parentElement.append(child);
-          }
-      }
-      return parentElement;
-    }
-    const prepareSVG = (svg) => {
-      const cleanRoot = removeNameSpace(svg)
-      const svgFragment = `
-      <MetaInfo xmlns="http://www.prognoz.ru"><Geo>
-        <GeoItem X="${svgTL.x}" Y="${svgTL.y}" Latitude="${geoStateTL.y}" Longitude="${geoTL.x}"/>
-        <GeoItem X="${svgBR.x}" Y="${svgBR.y}" Latitude="${geoStateBR.y}" Longitude="${geoBR.x}"/>
-      </Geo></MetaInfo>`
-
-
-
-      const regex = /(<svg[^>]*>)/
-      const metaInfo = svgFragment.trim();
-      const newSvg = cleanRoot.outerHTML.replace(regex, `$1${metaInfo}`);
-      return newSvg
-    }
-
     const labeledElements = (svg) => {
-      return [...svg.querySelectorAll('*[aria-label]')]
+      return [...svg.querySelectorAll('tspan[aria-label]')].filter(el => `${el.ariaLabel}`.length > 2 )
     }
 
 
-
-    const translateSvgCoordinate = (x,y) => {
-      var pt = svg.createSVGPoint()
-      pt.x = x
-      pt.y = y
-      const transformed =pt.matrixTransform(svg.getScreenCTM())
-      // calculate viewBox transformation
-      const geoX = transformed.x * xGeoRatio + geoContainerTL.x
-      const geoY = transformed.y * yGeoRatio + geoContainerTL.y
-      return [geoX, geoY]
-    }
-    const pathToSvgCoords = (svgPathElement) => {
-
-      const pathLength = svgPathElement.getTotalLength();
-      const viewBox = svgPathElement.ownerSVGElement.viewBox.baseVal; // get the viewbox
-
-      const coords = [];
-
-      for(let i=0; i < pathLength; i+=2) {
-        const point = svgPathElement.getPointAtLength(i);
-        const x = point.x * viewBox.width / svgPathElement.getBoundingClientRect().width + viewBox.x
-        const y = point.y * viewBox.height / svgPathElement.getBoundingClientRect().height + viewBox.y
-        coords.push([x, y])
+    /*
+    ChatGPT function:
+    Can you write a function in javascript that takes any SVG element that provides getBBox() and an instance of an svg path that describes a polygon, and returns the amount of overlap between the bounding box and the potential polygon that may contain the bounding box? If there is no intersection, the function should return 0. 
+    */
+    function getBoundingBoxOverlap(svgElement, polygonPath) {
+      // Get the bounding box of the SVG element
+      const bbox = svgElement.getBBox();
+    
+      // Get the screen transformation matrix for the SVG element
+      const screenCTM = svgElement.getScreenCTM();
+      function svgPointToScreenPoint(ctm, {x,y}) {
+        const p = svgElement.ownerSVGElement.createSVGPoint()
+        p.x = x
+        p.y = y
+        const screenPoint = p.matrixTransform(ctm)
+        return screenPoint
       }
-      return coords
+    
+      // Normalize the bounding box coordinates to screen units using the screen transformation matrix
+
+      const bboxMin = { x: bbox.x, y: bbox.y };
+      const bboxMax = { x: bbox.x + bbox.width, y: bbox.y + bbox.height };
+      const screenBboxMin = svgPointToScreenPoint(screenCTM, bboxMin)
+      const screenBboxMax = svgPointToScreenPoint(screenCTM, bboxMax)
+
+      const withinBox = polygonPath.getBoundingClientRect()
+      const withinMin = {x: withinBox.x, y: withinBox. y}
+      const withinMax = {x: withinBox.x + withinBox.width, y: withinBox.y + withinBox.height}
+
+    
+      // Parse the polygon path data into an array of points
+      const polygonPoints = polygonPath
+        .getAttribute("d")
+        .match(/-?\d+(?:\.\d+)?/g)
+        .map(Number)
+        .reduce((points, coord, index, coords) => {
+          if (index % 2 === 0) {
+            points.push({ x: coord, y: coords[index + 1] });
+          }
+          return points;
+        }, []);
+    
+      // Normalize each point to screen units using the inverse of the screen transformation matrix
+      const testBBox = polygonPoints.every((point) => {
+        // are any points opposite of the bbox
+        return polygonPoints.find( op => {
+          if (point.x < screenBboxMin.x && op.x > screenBboxMax.x) {
+            if (point.y < screenBboxMin.y && op.y > screenBboxMax.y) {
+              return true
+            }
+          }
+        })
+      });
+      
+
+      const isInside = screenBboxMax.x < withinMax.x && screenBboxMin.x > withinMin.x && screenBboxMax.y < withinMax.y && screenBboxMin.y > withinMin.y 
+    
+      // Check if any of the polygon points are inside the bounding box
+    
+      if (!isInside) {
+        // No overlap between the bounding box and the polygon
+        return {isInside: false, intersectionArea: 0}
+      }
+    
+      // Calculate the area of the intersection between the bounding box and the polygon
+      const minX = Math.max(screenBboxMin.x, polygonPoints.reduce((min, { x }) => Math.min(min, x), Infinity));
+      const maxX = Math.min(screenBboxMax.x, polygonPoints.reduce((max, { x }) => Math.max(max, x), -Infinity));
+      const minY = Math.max(screenBboxMin.y, polygonPoints.reduce((min, { y }) => Math.min(min, y), Infinity));
+      const maxY = Math.min(screenBboxMax.y, polygonPoints.reduce((max, { y }) => Math.max(max, y), -Infinity));
+      const intersectionArea = Math.max(0, maxX - minX) * Math.max(0, maxY - minY);
+    
+      return {isInside, intersectionArea}
     }
+
 
     const resolveDistrictPaths = (svg) => {
       const stateBox = statePath.path.getBoundingClientRect()
-      const maxCandidateArea = stateBox.width * stateBox.height * 0.90
-      const allPaths = [...svg.querySelectorAll('path')]
+      const allPaths = [...svg.querySelectorAll('path[fill][fill-opacity="1"]:not([stroke])')] // candidate district paths have fill and opacity
       const inStatePaths = allPaths.filter( path => {
         const pathCenter = getCenterOfBox(path.getBoundingClientRect())
-        return isPointWithinBox(pathCenter, stateBox)
+        const isWithinState = isPointWithinBox(pathCenter, stateBox)
+          path.setAttribute('is-within-state', isWithinState)
+        if (isWithinState) {
+          let color = new Color(path.getAttribute('fill')).hsv
+          path.setAttribute('color-s', color.s)
+          let isSaturated = color.s > 20
+          return isSaturated
+        }
       })
       const textElements = labeledElements(svg)
       const textPathMap = textElements.reduce((result, textElement) => {
         const text = textElement.attributes['aria-label'].value
-        const textBox = textElement.getBoundingClientRect()
-        const textCenter = getCenterOfBox(textBox)
-        const textArea = textBox.width * textBox.height
         const polyPaths = R.pipe(
           R.filter( currentPath => {
-            let result = true
-            const currentBox = currentPath.getBoundingClientRect()
-            result = result && isPointWithinBox(textCenter, currentBox)
-            const currentArea = currentBox.width * currentBox.height
-            result = result && currentArea < maxCandidateArea
-            result = result && currentArea > textArea
+
+            const overlap = getBoundingBoxOverlap(textElement, currentPath)
+            let result = overlap.isInside
+            if (currentPath.attributes['fill'].value === '#e8d548'/*'#db7542'*/) {
+              if (/petit/i.test(text)) {
+                debugger
+              }
+            }
+            currentPath.overlap = overlap
             return result
           }),
           R.sortBy(path => {
             // what is the overlap between this path's bounding box and the candidate path?
-            const currentPathBox = path.getBoundingClientRect()
-            const overX = Math.min(0, textBox.x + textBox.width - currentPathBox.x + runtime.features.state.screen.box.width)
-            const overY = Math.min(0, textBox.y +  textBox.height - currentPathBox.y + runtime.features.state.screen.box.height)
-            const underX = Math.min(currentPathBox.x - textBox.x, 0)
-            const underY = Math.min(currentPathBox.y - textBox.y, 0)
-            const total = overX + overY + underX + underY
-            return total
+            return path.overlap.intersectionArea
           })
         )(inStatePaths)
         const textContainedPath = polyPaths.at(-1)
@@ -577,6 +665,7 @@ document
         }
         return result
       }, {})
+      debugger
 
       return Object.entries(textPathMap).reduce( (result, [pathAttribute, text]) => {
         const inStatePath = inStatePaths.find(p => p.attributes['d'].value === pathAttribute)
@@ -607,6 +696,7 @@ document
         container: 'map-interactive-overlay', // container ID
         // Choose from Mapbox's core styles, or make your own style with Mapbox Studio
         style: 'mapbox://styles/mapbox/light-v11', // style URL
+        interactive: true,
         bounds: [
           [
             containerFeature.geo.points.bl.x,
@@ -621,48 +711,62 @@ document
        
       mbMap.on('load', () => {
         mbMap.resize()
-      for (const [name, attrs] of Object.entries(geoPaths)) {
-        const pathIndex = Object.keys(geoPaths).indexOf(name)
-        const {svgPath, geoPath} = attrs
-        if (attrs) {
-          mbMap.addSource(name, {
-            type: 'geojson',
-            data: geoPath
-          })
-        }
-        // Add a data source containing GeoJSON data.
-        // Add a new layer to visualize the polygon.
-        mbMap.addLayer({
-        'id': `fill-${pathIndex}`,
-        'type': 'fill',
-        'source': name,
-        'layout': {},
-        'paint': {
-          'fill-color': svgPath.fill ?? '#0080ff', // blue color fill
-          'fill-opacity': 0.5
+        for (const [name, attrs] of Object.entries(geoPaths)) {
+          const pathIndex = Object.keys(geoPaths).indexOf(name)
+          const {svgPath, geoPath} = attrs
+          if (attrs) {
+            mbMap.addSource(name, {
+              type: 'geojson',
+              data: geoPath
+            })
           }
-        });
-        // Add a black outline around the polygon.
-        mbMap.addLayer({
-          'id': `outline-${pathIndex}`,
-          'type': 'line',
+          // Add a data source containing GeoJSON data.
+          // Add a new layer to visualize the polygon.
+          const layer = mbMap.addLayer({
+          'id': `fill-${pathIndex}`,
+          'type': 'fill',
           'source': name,
           'layout': {},
           'paint': {
-            'line-color': '#000',
-            'line-width': 1
-          }
-        });
-        mbMap.addLayer({
-          'id': `text-${pathIndex}`,
-          'type': 'symbol',
-          'source': name,
-          'layout': {
-            'text-field': '{title}'
-          }
-        });
-        mbMap.scrollZoom.disable()
-      }
+            'fill-color': svgPath.fill ?? '#0080ff', // blue color fill
+            'fill-opacity': 0.15
+            }
+          });
+        
+          // Add a black outline around the polygon.
+          mbMap.addLayer({
+            'id': `outline-${pathIndex}`,
+            'type': 'line',
+            'source': name,
+            'layout': {},
+            'paint': {
+              'line-color': '#000',
+              'line-width': 1
+            }
+          });
+          mbMap.addLayer({
+            'id': `text-${pathIndex}`,
+            'type': 'symbol',
+            'source': name,
+            'layout': {
+              'text-field': '{title}'
+            }
+          });
+          mbMap.scrollZoom.disable()
+        }
+        mbMap.on('click', `fill-${name}`, (e) => {
+          debugger;
+          const {lng, lat} = e.lngLat
+          const coopListElement = document.querySelector('#coop-list')
+          const [name, paths] = Object.entries(geoPaths).find( ([name, paths]) => {
+            const tDistrict = turf.feature(paths.geoPath.geometry)
+            const p = turf.point(lng, lat)
+            return turf.booleanContains(tDistrict, p)
+          })
+          console.log('clicked', name, paths)
+          coopListElement.value = name
+          coopListElement.trigger('click')
+        })
       })
     }
     const pathDimensions = (pathElement) => {
@@ -675,15 +779,18 @@ document
 
     const processFiles = async () => {
 
+      runtime.showProgress('Reading PDF')
       const pdfBytes = await readAsBytes(document.querySelector("#pdfDocument"));
-      const csvText = await readAsText(document.querySelector('#contactDocument'))
+      csvText = await readAsText(document.querySelector('#contactDocument'))
 
+      runtime.showProgress('Loading PDF')
       const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
       const pdf = await new Promise((resolve, reject) => {
         loadingTask.promise.then(resolve);
       });
 
       async function renderPageToSVG(pageNumber, contextID) {
+        runtime.showProgress('Rendering PDF', `Page ${pageNumber}`)
         const page = await pdf.getPage(pageNumber);
         const viewport = page.getViewport({ scale: 1.0 });
         const opList = await page.getOperatorList();
@@ -702,6 +809,7 @@ document
 
       svgRoot = document.querySelector("#svg-context");
       statePath = findStatePath();
+
       stateFeature.svgPath = statePath.path
       statePath.path.stroke = "#ff0000"
       //stateCountyGeos = fetchStateZipGeos()
@@ -715,11 +823,14 @@ document
 
 
       const selectedState = document.querySelector("#state-list").value;
+      runtime.showProgress('State identified', selectedState)
       stateGeo = stateGeos.features.find((f) => {
         return f.properties.NAME === selectedState;
       });
       const state = UnitedStates.find(state => state.name === selectedState)
       zipGeos = (await fetchStateZipGeos(state))
+      const allZipCounts = Object.keys(zipProperties).length
+      let zipCurrent = 0;
       for (const [zip, areas] of Object.entries(zipProperties)) {
         const feature = zipGeos.features.find( feature => {
           const geoZip = feature.properties.ZCTA5CE10
@@ -740,13 +851,9 @@ document
             "BOX": zipBox
           }
         }
+        zipCurrent += 1;
+        runtime.showProgress('Loading ZIP Data', `${(zipCurrent/ allZipCounts)*100} % loaded`)
       }
-      const zipIndex = zipGeos.features.reduce( (result, feature) => {
-        const zip = feature.properties.ZCTA5CE10
-        result[zip] = feature
-        return result
-      }, {})
-
 
       containerFeature.svgPath = statePath.path.ownerSVGElement
 
@@ -776,38 +883,15 @@ document
           invertY: true
       })
 
+      runtime.showProgress('Finding primary state path')
       const containerRect = containerFeature.svgPath.getBoundingClientRect()
       const stateRect = boundsRelativeTo(stateFeature.svgPath.getBoundingClientRect(), containerRect)
       runtime.transformers.sXg = new SimpleShapeReferenceConverter(stateRect, stateFeature.geo.box)
       containerFeature.geo.box = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.box)
-      containerFeature.geo.box.y = 
       containerFeature.geo.bounds = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.bounds)
-
+      runtime.showProgress('Bounds calculated', `lat: ${containerFeature.geo.bounds.x} / lng: ${containerFeature.geo.bounds.y}`)
 
       // compute a transform that produces svg screen from svg view space
-      const screenPointForViewPoint = ({x, y}, relativeToContainer = true) => {
-        const screenPoint = runtime.transformers.vXs.sourceToTarget({x,y})
-        if (relativeToContainer) {
-          return pointRelativeTo(screenPoint, containerFeature.screen.box)
-        }
-        return screenPoint
-
-       var p = svg.createSVGPoint()
-        p.x = x
-        p.y = y
-        const txd = p.matrixTransform(svg.getCTM());
-        if (relativeToContainer) {
-          return {
-            x: (containerViewBox.x + txd.x) * xViewRatio,
-            y: (containerViewBox.y - txd.y) * yViewRatio,
-          }
-        } else {
-          return {
-            x: xViewLeft * xViewRatio,
-            y: yViewTop * yViewRatio
-          }
-        }
-      }
 
       const viewToScreenBounds = ({x,y,width,height}) => {
         return runtime.transformers.vXs.sourceToTargetBounds({x,y,width,height})
@@ -825,45 +909,7 @@ document
       */
       const {x: geoLeft, y: geoTop } = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.bounds)
 
-//      const geoLeft = geoStateBounds.x - (statePathScreenBounds.x)*xGeoRatio
- //     const geoTop = geoStateBounds.y - (statePathScreenBounds.y)*yGeoRatio
 
-
-      geoPointForScreenPoint = ({x, y}) => {
-        return runtime.transformers.sXg.sourceToTarget({x,y})
-
-        const left = x - containerScreenBox.left
-        const top = y - containerScreenBox.top
-        if (left < 0 || top < 0) {
-          console.error('All points should be within svg containing box')
-        }
-        return {
-          x: geoLeft + (left * xGeoRatio),
-          y: geoTop - (top * yGeoRatio)
-        }
-      }
-
-      const screenPointForGeo = ({x, y}) => {
-        return runtime.transformers.sXg.targetToSource({x,y})
-        const xDistance = (x - geoLeft) / xGeoRatio
-        const yDistance = (y - geoTop) / yGeoRatio
-        return {
-          x: containerScreenBox.left + xDistance,
-          y: containerScreenBox.top + yDistance
-        }
-      }
-
-      const screenToGeoBounds = ({x,y,width,height}) => {
-        return runtime.transformers.sXg.sourceToTargetBounds({x,y,width,height})
-        const { x: geoX, y: geoY} = geoPointForScreenPoint({x,y})
-        return {
-          x: geoX,
-          y: geoY,
-          width: width * xGeoRatio,
-          height: height * yGeoRatio
-        }
-
-      }
       const geoContainer = runtime.transformers.sXg.sourceToTargetBounds(containerFeature.screen.bounds)
       var geoContainerWidth = geoContainer.width
       var geoContainerHeight = geoContainer.height
@@ -885,7 +931,9 @@ document
       //var url = `https://maps.googleapis.com/maps/api/staticmap?auto=&scale=2&size=600x300&maptype=roadmap&format=png&key=AIzaSyBEPtIQzAXpTxTkRbGzKuG1p1N7i6g9bAI&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C1%7C${geoContainerTL.y}%2C${geoContainerTL.x}|&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C2%7C${geoContainerBR.y}%2C${geoContainerBR.x}`
 
       const textPaths = resolveDistrictPaths(svg)
+
       const coopListElement = document.querySelector('#coop-list')
+      coopListElement.removeAttribute('disabled')
       coopListElement.innerHTML = ""
       // const geoPaths = { [state.name]: {
       //   svgPath: stateFeature.svgPath,
@@ -893,10 +941,11 @@ document
       // }}
 
       
+      const districtNames = Object.keys(textPaths)
       coopListElement.innerHTML += "<option selected>Choose a coop</option>"
-      geoPaths = Object.entries(textPaths).sort((a,b) => {
-        return a[0] > b[0] ? 1 : -1
-      }).reduce((result, [districtName, svgPath]) => {
+      geoPaths = Object.entries(textPaths).reduce((result, [districtName, svgPath]) => {
+        const i = districtNames.indexOf(districtName)
+        runtime.showProgress('Processing path', `${districtName} (${i}/${districtNames.length})`)
 
         const districtIndex = Object.keys(textPaths).indexOf(districtName)
           const geoPath = geoFeatureForMatch(districtName, svgPath)
@@ -922,11 +971,6 @@ document
     const geoFeatureForMatch = (name, pathElement) => {
       const pathLength = pathElement.getTotalLength();
       const geoCoords = [];
-
-      const isDimensionValid = (dimension) => {
-        return dimension !== Infinity && dimension !== NaN
-      }
-
       
       const owner = containerFeature.svgPath
       const pathScreenCTM = pathElement.getScreenCTM()
@@ -946,40 +990,29 @@ document
     
 
 
-    // const pathScreenBoxElement = parser.parseFromString(`
-    //   <div style="position: absolute; left: ${pathScreenBox.x}px; top: ${pathScreenBox.y}px; width: ${pathScreenBox.width}px; height: ${pathScreenBox.height}px; border: 1px solid rgba(255,0,255,0.33);">${name}</div>
-    //   `, 'text/html')
+     const pathScreenBoxElement = parser.parseFromString(`
+       <div style="position: absolute; left: ${pathScreenBox.x}px; top: ${pathScreenBox.y}px; width: ${pathScreenBox.width}px; height: ${pathScreenBox.height}px; border: 1px solid rgba(255,0,255,0.33);" title="${name}"></div>
+       `, 'text/html')
 
-    //   runtime.refs.$mc.appendChild(pathScreenBoxElement.body.children[0])
-      for(let i=0; i<pathLength; i+=1) {
+      runtime.refs.$mc.querySelector('.overlays-container').appendChild(pathScreenBoxElement.body.children[0])
+      const ownerRect = owner.getBoundingClientRect()
+      for(let i=0; i<pathLength; i+=5) {
         const point = pathElement.getPointAtLength(i);
         const screenPoint = pointRelativeTo(
           point.matrixTransform(pathScreenCTM), 
-          owner.getBoundingClientRect())
+          ownerRect)
 
         const geoPoint = runtime.transformers.sXg.sourceToTarget(screenPoint)
-       // geoPoint.y = stateFeature.geo.box.y + (geoPoint.y - stateFeature.geo.box.y)  // debt
-        //const screenRelativePoint = screenPointForViewPoint(point, false)
-        //
-       // const pointBox = `<div style="position: absolute; left: ${screenPoint.x}px; top: ${screenPoint.y}px; width: 1px; height: 1px; background-color: rgba(255,100,255,0.5);"></div>`
-        //runtime.refs.$mc.appendChild(parser.parseFromString(pointBox, 'text/html').body.children[0])
-       // y += containerScreenBox.top
-        if (isDimensionValid(screenPoint.x) && isDimensionValid(screenPoint.y)) {
-          geoCoords.push({
-            x: geoPoint.x,
-            y: geoPoint.y
-          })
-
-        }
-        
-
-
+        geoCoords.push({
+          x: geoPoint.x,
+          y: geoPoint.y
+        })
       }
       
-    const geometry = {
-      type: 'LineString',
-      coordinates: geoCoords.map(coord => [coord.x, coord.y])
-    };
+      const geometry = {
+        type: 'LineString',
+        coordinates: geoCoords.map(coord => [coord.x, coord.y])
+      };
 
       const properties = {
         name,
@@ -1000,59 +1033,89 @@ document
         width: Math.abs(west - east),
         height: Math.abs(north - south)
       }
+      feature.properties = feature.properties || {}
       feature.properties.BOX = dBox
 
-      return turf.lineStringToPolygon(feature)
+      const convex = turf.convex(feature, { concavity: 1, properties: feature.properties})
+      return convex
     }
 
 
     processFiles()
+
+    const freshZipMatch = () => ({contained: [], crossed: [], errored: []})
+    const featureMatchesFor = (zipGeo, districtGeo, result) => {
+      // flatten everything
+      const zipFeatures = turf.flatten(turf.polygonToLineString(zipGeo))
+      const districtFeatures = turf.flatten(districtGeo)
+      for (const districtFeature of districtFeatures.features) {
+        for (const zipFeature of zipFeatures.features) {
+          try {
+            if (turf.booleanContains(districtFeature, zipFeature)) {
+              result.contained.push(zipFeature)
+            }
+            if (turf.booleanCrosses(districtFeature, zipFeature)) {
+              result.crossed.push(zipFeature)
+            }
+          } catch (e) {
+            zipFeature.errors = zipFeature.errors || []
+            zipFeature.errors.push(e)
+            result.errored.push(zipFeature)
+          }
+        }
+      }
+      return result
+    }
     document.querySelector('#coop-list').addEventListener('change', (e) => {
       const matchingZips = []
       const selectedName = e.target.selectedOptions[0].value
-      const district = geoPaths[e.target.selectedOptions[0].value]
-      const tDistrict = turf.feature(district.geoPath.geometry)
-      const zipMatches = zipGeos.features.reduce((result, zipFeature) => {
-        const tZipFeature = turf.polygonToLineString(turf.feature(zipFeature.geometry))
-        const crossed = turf.booleanCrosses(tDistrict, tZipFeature)
-        const crosses = zipFeature.properties.crosses ?? []
-        if (crossed) {
-          crosses.push(district)
-          crosses = [...crosses, district]
-        } 
-        zipFeature.properties.crosses = crosses
-
-        const contained = turf.booleanContains(tDistrict, tZipFeature)
-        const contains = zipFeature.properties.contains ?? []
-        if (contained) {
-          contains.push(district)
-        }
-        zipFeature.properties.contains = contains
-        contained && result.contained.push(zipFeature)
-        crossed && result.crossed.push(zipFeature)
-        return result
-      }, {contained: [], crossed: []})
-      document.querySelector('#candidate-zips-contains').value = `<h2>Full Matches</h2><br/>
+      const districtGeo = geoPaths[e.target.selectedOptions[0].value].geoPath
+      const zipMatches = zipGeos.features.reduce((result, zipGeo) => {
+        return featureMatchesFor(
+          zipGeo, 
+          districtGeo, result)
+      }, freshZipMatch())
+      const zipsContained = zipMatches.contained.map(zip => zip.properties.ZCTA5CE10)
+      const matches = csvText.split("\n").filter(line => zipsContained.some( zip => line.includes(`"${zip}"`)))
+      document.querySelector('#candidate-zips-contained').innerHTML = `<h2>Full Matches</h2><br/>
       <ul>
+        <li><a class='download-matches' target='_blak'>${matches.length} matched</a> in CSV</li>
         ${zipMatches.contained.map(zip => `<li>${zip.properties.ZCTA5CE10}</li>`).join('')}
       </ul>
       `
-      document.querySelector('#candidate-zips-crossed').value = `<h2>Partial Matches</h2><br/>
+      const base64DownloadMatches = btoa(matches.join("\n"))
+      document.querySelector('.download-matches').setAttribute('href', `data:text/csv;base64,${base64DownloadMatches}`)
+
+
+      document.querySelector('#candidate-zips-crossed').innerHTML = `<h2>Partial Matches</h2><br/>
       <ul>
         ${zipMatches.crossed.map(zip => `<li>${zip.properties.ZCTA5CE10}</li>`).join('')}
       </ul>
       `
-      for (const zipFeature of [...zipMatches.contained, ...zipMatches.crossed]) {
+      
+      document.querySelector('#candidate-zips-errored').innerHTML = `<h2>Errored Matches</h2><br/>
+      <ul>
+        ${zipMatches.errored.map(zip => `<li>
+        ${zip.properties.ZCTA5CE10}
+        
+        ${zip.properties.error}
+        </li>`).join('')}
+      </ul>
+      `
+
+      const allMatches = R.uniqBy(R.path(['properties', 'ZCTA5CE10']), [...zipMatches.contained, ...zipMatches.crossed])
+      for (const zipFeature of allMatches) {
         const zip = zipFeature.properties.ZCTA5CE10
         mbMap.addSource(zip, {
           type: 'geojson',
           data: zipFeature
         })
-        const maxBrightness = zipMatches.contained.includes(zipFeature) ? 255 : 128
+        const isContained = zipMatches.contained.map(R.path(['properties', 'ZCTA5CE10'])).includes(zipFeature.properties.ZCTA5CE10)
+        const maxBrightness = isContained ? 255 : 128
         const randomColor = [
-          parseInt(Math.random() * maxBrightness).toString(16),
-          parseInt(Math.random() * maxBrightness).toString(16),
-          parseInt(Math.random() * maxBrightness).toString(16)
+          String(parseInt(Math.random() * maxBrightness).toString(16)).padStart(2, '0'),
+          String(parseInt(Math.random() * maxBrightness).toString(16)).padStart(2, '0'),
+          String(parseInt(Math.random() * maxBrightness).toString(16)).padStart(2, '0')
         ].join('')
         mbMap.addLayer({
         'id': `fill-${zip}`,
@@ -1061,7 +1124,7 @@ document
         'layout': {},
         'paint': {
           'fill-color': `#${randomColor}`,
-          'fill-opacity': 0.5
+          'fill-opacity': isContained ? 0.75 : 0.25
           }
         });
 
@@ -1083,6 +1146,7 @@ document
 
 
   });
+  setTimeout(() => runtime.showProgress('Ready'), 1000);
 
 const findStatePath = () => {};
 const findParentCoords = () => {};

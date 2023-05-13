@@ -3,6 +3,7 @@
     "env"
   ],
   "plugins": [
+    ["@babel/plugin-proposal-decorators", {"legacy": true}],
     "@babel/plugin-transform-runtime",
     [
       "inline-json-import",
@@ -11,6 +12,7 @@
   ],
   "parserOpts": {
     "plugins": [
+      ["@babel/plugin-syntax-decorators", {"decoratorsBeforeExport": true}],
       "dynamicImport"
     ]
   }
