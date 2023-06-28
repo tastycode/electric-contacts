@@ -83,24 +83,7 @@ class RuntimeContext {
 const runtime = new RuntimeContext()
 const stateFeature = runtime.features.state
 const containerFeature = runtime.features.container
-// 5 contacts randomly around in arkansas
-const contacts = [
-  {
-    name: "Joe Matthew",
-    address: "2222 W Poplar, Arkansas",
-    location: [35.482569, -92.022929] // First Electric
-  },
-  {
-    name: "Chris Matthew",
-    address: "1000 W Poplar, Arkansas",
-    location: [34.195902, -91.958742] // C&L EC
-  },
-  {
-    name: "Chris Matthew",
-    address: "1000 W Poplar, Arkansas",
-    location: [35.206652, -94.131441] // AR Valley EC
-  }
-];
+window.runtime = runtime
 
 const updateStyles = (changes = {
   opacity: 0.5
@@ -115,7 +98,6 @@ const updateStyles = (changes = {
 // obviously, there are other ways to do this
 // in the absence of a known deployment environment
 // this is enough for me to use my own token
-//
 let mbT = 'pk.eyJ1IjoidGF'
 mbT = `${mbT}zdHljb2RlMiI`
 mbT = `${mbT}sImEiOiJjbGd`
@@ -144,7 +126,7 @@ The PDF files for this tool are available at <a href="https://www.cooperative.co
 <p>
 
   <label for="csvDocument">Contacts CSV</label><br/>
-  <input type="file" name="contactDocument" id="contactDocument" required accept="text/csv"/>
+  <input type="file" name="contactDocument" id="contactDocument" accept="text/csv"/>
 
 </p>
 <p>
@@ -421,7 +403,11 @@ const readAsText = (inputNode) => {
       resolve(reader.result)
     })
     reader.addEventListener("error", reject)
-    reader.readAsText(inputNode.files[0]);
+    if (inputNode.files[0]) {
+      reader.readAsText(inputNode.files[0]);
+    } else {
+      resolve("")
+    }
   });
 
 }
@@ -498,7 +484,7 @@ document
 
     // todo: all these share too much state, refactor
 
-    let statePath, svg,  geoPaths, csvText, mbMap, coops, svgRoot,  zipGeos,stateGeo, baseWidth, targetHeight
+    let statePath, svg,  geoPaths, csvText, mbMap, coops, svgRoot,  zipGeos, stateGeo, baseWidth, targetHeight
 
     const parser = new DOMParser();
     coops = []
@@ -521,7 +507,7 @@ document
       const maxDimensions = sortedPaths[0].dimensions;
       const threshold = maxDimensions.area * 0.9;
       const stateCandidate = sortedPaths.find(
-        (p) => p.dimensions.area < threshold
+        (p) => p.dimensions.area < threshold && p.path.attributes.getNamedItem('fill').nodeValue == '#e1e1e1' // All NREC states are coming down with this fill color, test Georgia
       );
       return stateCandidate;
     };
@@ -636,11 +622,6 @@ document
 
             const overlap = getBoundingBoxOverlap(textElement, currentPath)
             let result = overlap.isInside
-            if (currentPath.attributes['fill'].value === '#e8d548'/*'#db7542'*/) {
-              if (/petit/i.test(text)) {
-                debugger
-              }
-            }
             currentPath.overlap = overlap
             return result
           }),
@@ -665,7 +646,6 @@ document
         }
         return result
       }, {})
-      debugger
 
       return Object.entries(textPathMap).reduce( (result, [pathAttribute, text]) => {
         const inStatePath = inStatePaths.find(p => p.attributes['d'].value === pathAttribute)
@@ -755,7 +735,6 @@ document
           mbMap.scrollZoom.disable()
         }
         mbMap.on('click', `fill-${name}`, (e) => {
-          debugger;
           const {lng, lat} = e.lngLat
           const coopListElement = document.querySelector('#coop-list')
           const [name, paths] = Object.entries(geoPaths).find( ([name, paths]) => {
@@ -794,6 +773,7 @@ document
         const page = await pdf.getPage(pageNumber);
         const viewport = page.getViewport({ scale: 1.0 });
         const opList = await page.getOperatorList();
+        // use custom class for aria-label transformation
         const svgGfx = new SVGGraphicsOverride(page.commonObjs, page.objs);
         svgGfx.embedFonts = false;
         let doc = await svgGfx.getSVG(opList, viewport);
@@ -804,29 +784,24 @@ document
       }
 
       const svg = await renderPageToSVG(1, 'svg-context')
-      const $svg = SVG(svg)
-      await renderPageToSVG(2, 'svg-contacts')
-
       svgRoot = document.querySelector("#svg-context");
-      statePath = findStatePath();
-
-      stateFeature.svgPath = statePath.path
-      statePath.path.stroke = "#ff0000"
-      //stateCountyGeos = fetchStateZipGeos()
-      // now we have a bounding box for the whole state
-      // we also know the true bounding box in latitude and longitude
-      // given the position of the state bounding box within the
-      // parent bounding box, we can get the lat/long bounding box coordinates
-      // of the parent
-
-      // get SVG bounding box
-
-
       const selectedState = document.querySelector("#state-list").value;
       runtime.showProgress('State identified', selectedState)
       stateGeo = stateGeos.features.find((f) => {
         return f.properties.NAME === selectedState;
       });
+      const [west, south, east, north] = geojsonExtent(stateGeo);
+      stateFeature.geo.box = {
+        x: west,
+        y: north,
+        width: Math.abs(west - east),
+        height: Math.abs(north - south)
+      }
+
+      statePath = findStatePath();
+      stateFeature.svgPath = statePath.path
+      debugger;
+      statePath.path.stroke = "#ff0000"
       const state = UnitedStates.find(state => state.name === selectedState)
       zipGeos = (await fetchStateZipGeos(state))
       const allZipCounts = Object.keys(zipProperties).length
@@ -866,14 +841,6 @@ document
 
       //statePathViewBox (non-relative to container 0), statePathScreenBounds, geo
       //west, south, east, north order.
-      const [west, south, east, north] = geojsonExtent(stateGeo);
-
-      stateFeature.geo.box = {
-        x: west,
-        y: north,
-        width: Math.abs(west - east),
-        height: Math.abs(north - south)
-      }
       stateFeature.view.box = stateFeature.svgPath.getBBox()
 
       var [tl, tr, br, bl] = pointsForBox(stateFeature.geo.box)
@@ -890,55 +857,19 @@ document
       containerFeature.geo.box = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.box)
       containerFeature.geo.bounds = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.bounds)
       runtime.showProgress('Bounds calculated', `lat: ${containerFeature.geo.bounds.x} / lng: ${containerFeature.geo.bounds.y}`)
-
-      // compute a transform that produces svg screen from svg view space
-
-      const viewToScreenBounds = ({x,y,width,height}) => {
-        return runtime.transformers.vXs.sourceToTargetBounds({x,y,width,height})
-      }
-
-
-
-
-      // compute a transform that produces geo from SVG screen
-      /*
-
-      pixelWidth         pixelLeft
-      ----------    =   ---------
-      geoWidth           geoLeft
-      */
-      const {x: geoLeft, y: geoTop } = runtime.transformers.sXg.sourceToTarget(containerFeature.screen.bounds)
-
-
       const geoContainer = runtime.transformers.sXg.sourceToTargetBounds(containerFeature.screen.bounds)
-      var geoContainerWidth = geoContainer.width
-      var geoContainerHeight = geoContainer.height
 
-      // to test, we just get the bbox of the statePath and compare ocords
-      //pathViewBox // svg internal view
-      //statePathScreenBox // screen
-    //var [ a, b, c, d] = pointsForBox(runtime.transformers.sXg.sourceToTargetBounds(stateFeature.screen.bounds))
-    var [tl,tr,br,bl] = pointsForBox(geoContainer)
-    containerFeature.geo.points = { tl, tr, br, bl}
+      var [tl,tr,br,bl] = pointsForBox(geoContainer)
+      containerFeature.geo.points = { tl, tr, br, bl}
 
 
-      const NS = svg.getAttribute('xmlns');
-      const aspect = containerFeature.screen.box.width / containerFeature.screen.box.height
       baseWidth = containerFeature.screen.box.width
       targetHeight =  parseInt(baseWidth * containerFeature.screen.box.height / containerFeature.screen.box.width)
 
-
-      //var url = `https://maps.googleapis.com/maps/api/staticmap?auto=&scale=2&size=600x300&maptype=roadmap&format=png&key=AIzaSyBEPtIQzAXpTxTkRbGzKuG1p1N7i6g9bAI&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C1%7C${geoContainerTL.y}%2C${geoContainerTL.x}|&markers=size:mid%7Ccolor:0x2e3a5c%7Clabel:C2%7C${geoContainerBR.y}%2C${geoContainerBR.x}`
-
       const textPaths = resolveDistrictPaths(svg)
-
       const coopListElement = document.querySelector('#coop-list')
       coopListElement.removeAttribute('disabled')
       coopListElement.innerHTML = ""
-      // const geoPaths = { [state.name]: {
-      //   svgPath: stateFeature.svgPath,
-      //   geoPath: geoFeatureForMatch(state.name, statePath.path)
-      // }}
 
       
       const districtNames = Object.keys(textPaths)
@@ -949,7 +880,6 @@ document
 
         const districtIndex = Object.keys(textPaths).indexOf(districtName)
           const geoPath = geoFeatureForMatch(districtName, svgPath)
-          coopListElement.innerHTML += `<option>${districtName}</option>`
           result[districtName] = {
             svgPath,
             geoPath,
@@ -963,6 +893,11 @@ document
 
         return result
       }, {})
+    for (const districtName of Object.keys(textPaths).sort()) {
+      coopListElement.innerHTML += `<option value="${districtName}">${districtName}</option>`
+    }
+      
+
       
      // await showStaticMap()
       await showMap(geoPaths)
@@ -1079,7 +1014,7 @@ document
       const matches = csvText.split("\n").filter(line => zipsContained.some( zip => line.includes(`"${zip}"`)))
       document.querySelector('#candidate-zips-contained').innerHTML = `<h2>Full Matches</h2><br/>
       <ul>
-        <li><a class='download-matches' target='_blak'>${matches.length} matched</a> in CSV</li>
+        <li><a class='download-matches' download="${selectedName}.zipMatches.csv" target='_blank'>${matches.length} matched</a> in CSV</li>
         ${zipMatches.contained.map(zip => `<li>${zip.properties.ZCTA5CE10}</li>`).join('')}
       </ul>
       `

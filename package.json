@@ -16,7 +16,7 @@
     "@svgdotjs/svg.js": "^3.1.2",
     "@terraformer/common": "2.1.2",
     "@turf/turf": "^6.5.0",
-    "colorjs.io": "^0.4.3",
+    "colorjs.io": "^0.4.5",
     "geojson-bounding-box": "0.2.0",
     "kld-intersections": "^0.7.0",
     "mapbox-gl": "^2.13.0",
