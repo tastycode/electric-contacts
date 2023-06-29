@@ -6,13 +6,17 @@ import mapboxgl from 'mapbox-gl'
 import { SVG } from '@svgdotjs/svg.js'
 import { throttle } from "utils-decorators";
 import * as turf from '@turf/turf'
-import Color from 'colorjs.io'
+import chroma from 'chroma-js'
 import { geoFromSVGXML } from 'svg2geojson'
 import * as R from 'ramda'
 import UnitedStates from 'states-us'
 import { collapseTextChangeRangesAcrossMultipleVersions } from "typescript";
 var pdfjsLib = require("pdfjs-dist");
 const toBBox = require("geojson-bounding-box");
+
+let progressState = ''
+let progressDetail = null;
+
 class RuntimeContext {
 
   features = {
@@ -203,8 +207,6 @@ let zipProperties = {}
 let stateZips = {}
 let stateGeos = { features: [] };
 let states = [];
-let progressState = null
-let progressDetail = null;
 
 
 const getCenterOfBox = (bbox) => {
@@ -506,8 +508,20 @@ document
         });
       const maxDimensions = sortedPaths[0].dimensions;
       const threshold = maxDimensions.area * 0.9;
+      const isDesaturatedStateCandidate = (path) => {
+        let fillColor = path.attributes.getNamedItem('fill').nodeValue ?? '#ffffff'
+        if (fillColor == 'none') {
+          fillColor = '#ffffff'
+        }
+        
+        
+        const [h,s,v] = chroma(fillColor).hsv()
+        return s == 0 && v < 1
+
+
+      }
       const stateCandidate = sortedPaths.find(
-        (p) => p.dimensions.area < threshold && p.path.attributes.getNamedItem('fill').nodeValue == '#e1e1e1' // All NREC states are coming down with this fill color, test Georgia
+        (p) => p.dimensions.area < threshold && isDesaturatedStateCandidate(p.path)
       );
       return stateCandidate;
     };
@@ -608,9 +622,9 @@ document
         const isWithinState = isPointWithinBox(pathCenter, stateBox)
           path.setAttribute('is-within-state', isWithinState)
         if (isWithinState) {
-          let color = new Color(path.getAttribute('fill')).hsv
-          path.setAttribute('color-s', color.s)
-          let isSaturated = color.s > 20
+          let [h,s,v] = chroma(path.getAttribute('fill')).hsv()
+          path.setAttribute('color-s', s)
+          let isSaturated = s > .20
           return isSaturated
         }
       })
@@ -675,7 +689,6 @@ document
       mbMap = new mapboxgl.Map({
         container: 'map-interactive-overlay', // container ID
         // Choose from Mapbox's core styles, or make your own style with Mapbox Studio
-        style: 'mapbox://styles/mapbox/light-v11', // style URL
         interactive: true,
         bounds: [
           [
@@ -800,7 +813,6 @@ document
 
       statePath = findStatePath();
       stateFeature.svgPath = statePath.path
-      debugger;
       statePath.path.stroke = "#ff0000"
       const state = UnitedStates.find(state => state.name === selectedState)
       zipGeos = (await fetchStateZipGeos(state))
@@ -829,6 +841,7 @@ document
         zipCurrent += 1;
         runtime.showProgress('Loading ZIP Data', `${(zipCurrent/ allZipCounts)*100} % loaded`)
       }
+debugger
 
       containerFeature.svgPath = statePath.path.ownerSVGElement
 

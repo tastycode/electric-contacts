@@ -1,2 +1,8 @@
 *.zip
+.parcel-cache
+.cache
+dist
 node_modules
+
+# Local Netlify folder
+.netlify
